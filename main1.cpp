@@ -10,8 +10,9 @@
 #include <fcntl.h>
 #include <pwd.h>
 #include <grp.h>
-using namespace std;
 #define MAX_CHAR 4096
+#define BUF_SIZE 65536
+using namespace std;
 
 char root[MAX_CHAR];
 char curr_dir[MAX_CHAR];
@@ -23,8 +24,11 @@ struct winsize terminal;
 struct termios orig_termios, new_termios;
 int cursor_x = 1, cursor_y = 1;
 int sflag = 0;
-std::stack<string> past_path;
-std::stack<string> forw_path;
+stack<string> past_path;
+stack<string> forw_path;
+vector<string> command_tokens;
+string source_path, dest_path;
+// bool is_goto_called=false;
 
 void listDir(const char *root);
 void display(const char *fileName);
@@ -39,6 +43,20 @@ void home();
 int enterCommandMode();
 void modify_dlist();
 void clearStack();
+void printCursor();
+void splitCommand(string);
+int copy();
+void move();
+void create_file();
+void create_dir();
+void delete_file();
+void delete_dir();
+void goto_path();
+void search();
+void renameFunc();
+void copyDirectory(string, string);
+void copyFile(string, string);
+void recursiveDelete(string);
 
 int main(int argc, char *argv[])
 {
@@ -57,7 +75,7 @@ int main(int argc, char *argv[])
     }
     strcat(curr_dir, root);
     past_path.push(root);
-    // printf("%c[?1049h",27); //Alternate buffer on
+    printf("%c[?1049h", 27); //Alternate buffer on
     listDir(root);
     onNCanonicalMode();
     return 0;
@@ -79,6 +97,9 @@ void listDir(const char *path)
     printf("\033[H\033[J");
     printf("%c[%d;%dH", 27, 1, 1);
     d_nameList.clear();
+    // int last_row = terminal.ws_row;
+    // printf("%c[%d;%dH", 27, last_row, 1);
+    // printf("In Normal Mode");
     while ((de = readdir(dr)) != NULL)
     {
         if (strcmp(path, root) == 0)
@@ -92,6 +113,10 @@ void listDir(const char *path)
 
     sort(d_nameList.begin(), d_nameList.end());
     modify_dlist();
+
+    int last_row = terminal.ws_row;
+    printf("%c[%d;%dH", 27, last_row, 1);
+    printf("In Normal Mode");
     printf("%c[%d;%dH", 27, 1, 1);
     // printf("\x1b[31m\x1b[44m");
     closedir(dr);
@@ -99,6 +124,9 @@ void listDir(const char *path)
 
 void modify_dlist()
 {
+    // int last_row = terminal.ws_row;
+    // printf("%c[%d;%dH", 27, last_row, 1);
+    // printf("In Normal Mode");
     write(STDOUT_FILENO, "\x1b[2J", 4); //to clear screen
     ioctl(STDOUT_FILENO, TIOCGWINSZ, &terminal);
     term_row = terminal.ws_row - 2;
@@ -198,6 +226,8 @@ void onNCanonicalMode()
     int last_row = terminal.ws_row;
     printf("%c[%d;%dH", 27, last_row, 1);
     printf("In Normal Mode");
+    cursor_x = cursor_y = 1;
+    printCursor();
     tcgetattr(STDIN_FILENO, &orig_termios);
     new_termios = orig_termios;
 
@@ -254,10 +284,18 @@ void onNCanonicalMode()
         else if (ch == 10)
             enter();
         else if (ch == ':')
-            enterCommandMode();
+        {
+            cout << "helo  : \n";
+            int ret_value = enterCommandMode();
+
+            cout << "exit command mode\n";
+            listDir(curr_dir);
+        }
         else if (ch == 'q')
         {
-            cout << "exit()";
+            // cout << "\nexi/t()";
+            printf("\033[H\033[J");
+            printf("%c[%d;%dH", 27, 1, 1);
             tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
             exit(0);
         }
@@ -458,24 +496,454 @@ void home()
     // cout << "home\n";
 }
 
-void deleteLastChar(){
+void deleteLastChar()
+{
     int last_row = terminal.ws_row;
     printf("%c[%d;%dH", 27, last_row, cursor_y);
-    printf("%c[0K",27);
-    cout << ": ";    
+    printf("%c[0K", 27);
+    // cout << ": ";
+}
+
+void clearLastLine()
+{
+    int last_row = terminal.ws_row;
+    printf("%c[%d;%dH", 27, last_row, 1);
+    printf("%c[0K", 27);
+    cout << ": ";
+}
+
+void splitCommand(string fullCommand)
+{
+    if (fullCommand.length() == 0)
+    {
+        cout << "commadn too shorrt\n";
+        return;
+    }
+    string temp = "";
+    int len = fullCommand.size();
+    // cout << "full command : " << fullCommand<<endl;
+    command_tokens.clear();
+    for (int i = 0; i < len; i++)
+    {
+        if (fullCommand[i] == ' ' || fullCommand[i] == '\n')
+        {
+            if (temp.size() > 0)
+            {
+                command_tokens.push_back(temp);
+            }
+            temp = "";
+        }
+        else if (fullCommand[i] == '\\')
+        {
+            i++;
+            temp + fullCommand[i];
+        }
+        else
+        {
+            temp += fullCommand[i];
+        }
+    }
+    return;
 }
 
 int enterCommandMode()
 {
+    int last_row = terminal.ws_row;
     string fullCommand;
-    char ch = getchar();
-    while(ch!=27){
-        if(ch==127){
-            deleteLastChar();
-            // fullComma
+    string firstWord;
+    char ch;
+
+    do
+    {
+        cursor_y = 2;
+        printf("%c[%d;%dH", 27, last_row, 1);
+        printf("%c[2K", 27);
+        cout << ": ";
+        command_tokens.clear();
+        fullCommand = "";
+        while ((ch = getchar()) != 27 && ch != 10)
+        {
+            cout << ch;
+            cursor_y++;
+            if (ch == 127)
+            {
+                if (cursor_y > 3)
+                {
+                    cursor_y--;
+                    deleteLastChar();
+                    if (fullCommand.size() <= 1)
+                    {
+                        fullCommand = "";
+                    }
+                    else
+                    {
+                        fullCommand = fullCommand.substr(0, fullCommand.length() - 1);
+                    }
+
+                    cursor_y--;
+                }
+                // fullComma
+            }
+            else
+            {
+                // cout << ch;
+                fullCommand += ch;
+            }
+            // ch = getchar();
         }
-        else cout<<ch;
-    }
+        fullCommand += "\n";
+        cout << "\n";
+        splitCommand(fullCommand);
+        // cout << "checking commands vecro\n";
+        // for (int i = 0; i < command_tokens.size(); i++)
+        // {
+        //     cout << command_tokens[i] << endl;
+        // }
+
+        // cout << "\nfirst wp  rd : " << firstWord << endl;
+        if (ch == 10)
+        {
+            firstWord = command_tokens[0];
+            if (firstWord == "copy")
+                copy();
+            else if (firstWord == "move")
+                move();
+            else if (firstWord == "rename")
+                renameFunc();
+            else if (firstWord == "create_file")
+                create_file();
+            else if (firstWord == "create_dir")
+                create_dir();
+            else if (firstWord == "delete_file")
+                delete_file();
+            else if (firstWord == "delete_dir")
+                delete_dir();
+            else if (firstWord == "goto")
+                goto_path();
+            else if (firstWord == "search")
+                search();
+            else
+            {
+                cursor_x = terminal.ws_row;
+                cursor_y = 1;
+                printCursor();
+                printf("\x1b[0K");
+                printf(":");
+                cout << "command not found." << endl;
+            }
+        }
+    } while (ch != 27);
     cout << "command mode\n";
     return 0;
+}
+
+int copy()
+{
+    // command_tokens.clear();
+    int len;
+    string source_filename, dest_path2;
+    if (command_tokens.size() < 3)
+    {
+        cout << "invalid command\n";
+    }
+    else
+    {
+        dest_path = command_tokens[command_tokens.size() - 1];
+        dest_path = get_absolute_path(dest_path);
+        // cout << "dest path : " << dest_path<<endl;
+        if (isDirectory(dest_path))
+        {
+            for (int i = 1; i < command_tokens.size() - 1; i++)
+            {
+
+                source_path = get_absolute_path(command_tokens[i]);
+                len = source_path.length();
+                int pos = source_path.find_last_of("/\\");
+                source_filename = source_path.substr(pos + 1, len - pos);
+                // cout << "source filename : " << source_filename<<endl;
+                dest_path2 = dest_path + "/" + source_filename;
+                if (isDirectory(source_path))
+                {
+                    copyDirectory(source_path, dest_path2);
+                }
+                else
+                {
+                    // cout << "copying : " << command_tokens[i] << endl;
+                    copyFile(source_path, dest_path2);
+                }
+            }
+        }
+        else
+        {
+            cout << "destination must be a folder";
+            return -1;
+        }
+    }
+    // cout << "in copy\n";
+    return 0;
+}
+
+void copyFile(string source, string dest)
+{
+    char buf[BUF_SIZE];
+    int bufsize;
+    FILE *src, *dst;
+    // cout << "source : " << source<< "  dest : " << dest << endl;
+    src = fopen(source.c_str(), "r");
+    if (src == NULL)
+    {
+        cout << "error in copying\n";
+        return;
+    }
+    dst = fopen(dest.c_str(), "w");
+    if (dst == NULL)
+    {
+        cout << "error in copying\n";
+        return;
+    }
+
+    size_t in, out;
+    while (1)
+    {
+        in = fread(buf, 1, bufsize, src);
+        if (0 == in)
+            break;
+        out = fwrite(buf, 1, in, dst);
+        if (0 == out)
+            break;
+    }
+
+    struct stat source_stat;
+    stat(source.c_str(), &source_stat);
+    chown(dest.c_str(), source_stat.st_uid, source_stat.st_gid);
+    chmod(dest.c_str(), source_stat.st_mode);
+    fclose(src);
+    fclose(dst);
+    return;
+}
+
+void copyDirectory(string source, string dest)
+{
+    if (mkdir(dest.c_str(), 0755) != 0)
+    {
+        cout << "error in copy(creating) direct\n";
+        // perror("");
+        return;
+    }
+    DIR *d;
+    d = opendir(source.c_str());
+    if (d == NULL)
+    {
+        cout << "error in opendir\n";
+        return;
+    }
+    struct dirent *dir;
+    while ((dir = readdir(d)))
+    {
+        if (strcmp(dir->d_name, ".") == 0 || strcmp(dir->d_name, "..") == 0)
+            continue;
+        string src_path = source + "/" + string(dir->d_name);
+        string d_path = dest + "/" + string(dir->d_name);
+
+        if (isDirectory(src_path))
+        {
+            copyDirectory(src_path, d_path);
+        }
+        else
+        {
+            copyFile(src_path, d_path);
+        }
+    }
+}
+
+void renameFunc()
+{
+    if (command_tokens.size() != 3)
+    {
+        cout << "invalid command \n";
+        return;
+    }
+    string old_path = get_absolute_path(command_tokens[1]);
+    string new_path = get_absolute_path(command_tokens[2]);
+    if (rename(old_path.c_str(), new_path.c_str()) == -1)
+        cout << "error in renaming";
+    return;
+}
+
+void goto_path()
+{
+    // is_goto_called = true;
+    if (command_tokens.size() != 2)
+    {
+        cout << "invalid command \n";
+        return;
+    }
+    string dest = command_tokens[1];
+    dest_path = get_absolute_path(dest);
+    if (!isDirectory(dest_path))
+    {
+        cout << "not a directory\n";
+        return;
+    }
+    past_path.push(curr_dir);
+    strcpy(curr_dir, dest_path.c_str());
+    listDir(curr_dir);
+}
+
+void create_dir()
+{
+    if (command_tokens.size() < 3)
+    {
+        cout << "invalid command \n";
+        return;
+    }
+    string dest_folder_path = get_absolute_path(command_tokens[command_tokens.size() - 1]);
+    if (!isDirectory(dest_folder_path))
+    {
+        cout << "not a directory \n";
+        return;
+    }
+    for (int i = 1; i < command_tokens.size() - 1; i++)
+    {
+        dest_path = dest_folder_path + "/" + command_tokens[i];
+        // cout << "dest path :" << dest_path<<endl;
+        mkdir(dest_path.c_str(), 0755);
+    }
+    return;
+    // cout << "create dir \n";
+}
+
+void create_file()
+{
+    if (command_tokens.size() < 3)
+    {
+        cout << "invalid command \n";
+        return;
+    }
+    string dest_folder_path = get_absolute_path(command_tokens[command_tokens.size() - 1]);
+    if (!isDirectory(dest_folder_path))
+    {
+        cout << "not a directory \n";
+        return;
+    }
+    for (int i = 1; i < command_tokens.size() - 1; i++)
+    {
+        dest_path = dest_folder_path + "/" + command_tokens[i];
+        if (creat(dest_path.c_str(), S_IRGRP | S_IROTH | S_IRWXU) < 0)
+        {
+            cout << "error creating file";
+        }
+    }
+    return;
+    // cout << "create file \n ";
+}
+
+void delete_file()
+{
+    // cout <<"inn here"<<endl;
+    if (command_tokens.size() < 2)
+    {
+        cout << "invalid command \n";
+        return;
+    }
+    for (int i = 1; i < command_tokens.size(); i++)
+    {
+        dest_path = get_absolute_path(command_tokens[i]);
+        if (remove(dest_path.c_str()) != 0)
+        {
+            cout << "error deleting file";
+        }
+    }
+    return;
+    // cout << "delete file \n";
+}
+
+void delete_dir()
+{
+    // cout << "oin delete dir \n";
+    if (command_tokens.size() < 2)
+    {
+        cout << "invalid command \n";
+        return;
+    }
+    for (int i = 1; i < command_tokens.size(); i++)
+    {
+        dest_path = get_absolute_path(command_tokens[i]);
+        if (!isDirectory(dest_path))
+        {
+            cout << "not a directory \n";
+            return;
+        }
+        recursiveDelete(dest_path);
+    }
+    // cout << "delete dir \n ";
+}
+
+void recursiveDelete(string path)
+{
+    DIR *d;
+    struct dirent *dir;
+    d = opendir(path.c_str());
+    if (d == NULL)
+    {
+        perror("opendir");
+        return;
+    }
+
+    while (dir = readdir(d))
+    {
+        if ((string(dir->d_name) == "..") || (string(dir->d_name) == "."))
+            continue;
+        else
+        {
+            string path_to_delete = path + "/" + string(dir->d_name);
+            if (isDirectory(path_to_delete))
+                recursiveDelete(path_to_delete);
+            else
+                // cout << "path to delete : " << path_to_delete << endl;
+                remove(path_to_delete.c_str());
+        }
+    }
+    closedir(d);
+    rmdir(path.c_str());
+    return;
+}
+
+void move()
+{
+    string file_to_move, source_filename,dest_path2;
+    if (command_tokens.size() < 2)
+    {
+        cout << "invalid command \n";
+        return;
+    }
+    dest_path = get_absolute_path(command_tokens[command_tokens.size() - 1]);
+
+    for (int i = 1; i < command_tokens.size() - 1; i++)
+    {
+        source_path = get_absolute_path(command_tokens[i]);
+        int len = source_path.length();
+        int pos = source_path.find_last_of("/\\");
+        source_filename = source_path.substr(pos + 1, len - pos);
+        dest_path2 = dest_path + "/" + source_filename;
+        file_to_move = get_absolute_path(command_tokens[i]);
+        if (isDirectory(file_to_move))
+        {
+            copyDirectory(file_to_move, dest_path2);
+            recursiveDelete(file_to_move);
+        }
+        else
+        {
+            copyFile(file_to_move, dest_path2);
+            if (remove(file_to_move.c_str()) != 0){
+                cout << "error in moving file \n";
+                return;
+            }
+        }
+    }
+}
+
+void search()
+{
+    cout << "searcgh\n";
 }
