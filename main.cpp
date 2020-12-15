@@ -28,6 +28,8 @@ stack<string> past_path;
 stack<string> forw_path;
 vector<string> command_tokens;
 string source_path, dest_path;
+int scroll_flag = 0;
+int count_files = 0;
 // bool is_goto_called=false;
 
 void listDir(const char *root);
@@ -57,6 +59,10 @@ void renameFunc();
 void copyDirectory(string, string);
 void copyFile(string, string);
 void recursiveDelete(string);
+void search();
+void recursiveSearch(string, string, bool &);
+void scroll_up();
+void scroll_down();
 
 int main(int argc, char *argv[])
 {
@@ -73,22 +79,34 @@ int main(int argc, char *argv[])
         cout << "too many args\n";
         exit(0);
     }
+    printf("%c[?1049h", 27);
     strcat(curr_dir, root);
     past_path.push(root);
-    printf("%c[?1049h", 27); //Alternate buffer on
     listDir(root);
     onNCanonicalMode();
     return 0;
 }
 
+bool isDirectory(string path)
+{
+    struct stat sb;
+    if (stat(path.c_str(), &sb) != 0)
+    {
+        cout << "directory failure\n";
+        return false;
+    }
+    if (S_ISDIR(sb.st_mode))
+        return true;
+    else
+        return false;
+}
+
 void listDir(const char *path)
 {
-    struct dirent *de; // Pointer for directory entry
-
-    // opendir() returns a pointer of DIR type.
+    struct dirent *de;
     DIR *dr = opendir(path);
 
-    if (dr == NULL) // opendir returns NULL if couldn't open directory
+    if (dr == NULL)
     {
         printf("Could not open current directory");
         return;
@@ -100,15 +118,33 @@ void listDir(const char *path)
     // int last_row = terminal.ws_row;
     // printf("%c[%d;%dH", 27, last_row, 1);
     // printf("In Normal Mode");
+    int num = 1;
     while ((de = readdir(dr)) != NULL)
     {
-        if (strcmp(path, root) == 0)
+        if (scroll_flag == 1)
         {
-            strcpy(curr_dir, root);
-            if (strcmp(de->d_name, "..") == 0)
-                continue;
+            if (num >= count_files)
+            {
+                if (strcmp(path, root) == 0)
+                {
+                    strcpy(curr_dir, root);
+                    if (strcmp(de->d_name, "..") == 0)
+                        continue;
+                }
+                d_nameList.push_back(de->d_name);
+            }
         }
-        d_nameList.push_back(de->d_name);
+        else
+        {
+            if (strcmp(path, root) == 0)
+            {
+                strcpy(curr_dir, root);
+                if (strcmp(de->d_name, "..") == 0)
+                    continue;
+            }
+            d_nameList.push_back(de->d_name);
+        }
+        num++;
     }
 
     sort(d_nameList.begin(), d_nameList.end());
@@ -116,7 +152,11 @@ void listDir(const char *path)
 
     int last_row = terminal.ws_row;
     printf("%c[%d;%dH", 27, last_row, 1);
-    printf("In Normal Mode");
+    printf("%c[2K", 27);
+    printf("\033[1m\033[33mNormal Mode");
+    printf("%c[%d;%dH", 27, last_row - 1, 1);
+    cout << "\033[1;36mUP  LEFT  DOWN  RIGHT  h/H(HOME)  BACKSPACE  k(SCROLL-DOWN)  l(SCROLL-UP)  q(EXIT)  :(COMMAND-MODE)";
+    cout << "\033[37m";
     printf("%c[%d;%dH", 27, 1, 1);
     // printf("\x1b[31m\x1b[44m");
     closedir(dr);
@@ -124,10 +164,7 @@ void listDir(const char *path)
 
 void modify_dlist()
 {
-    // int last_row = terminal.ws_row;
-    // printf("%c[%d;%dH", 27, last_row, 1);
-    // printf("In Normal Mode");
-    write(STDOUT_FILENO, "\x1b[2J", 4); //to clear screen
+    write(STDOUT_FILENO, "\x1b[2J", 4); //clear screen
     ioctl(STDOUT_FILENO, TIOCGWINSZ, &terminal);
     term_row = terminal.ws_row - 2;
     term_col = terminal.ws_col;
@@ -145,45 +182,27 @@ void modify_dlist()
     }
     return;
 }
-/*============================================================
-takes path and check if directory or not.
-=============================================================*/
-bool isDirectory(string path)
-{
-    struct stat sb;
-    if (stat(path.c_str(), &sb) != 0)
-    {
-        perror(path.c_str());
-        return false;
-    }
-    if (S_ISDIR(sb.st_mode))
-        return true;
-    else
-        return false;
-}
-/*============================================================
-take relative path and convert to absolute path for internal
-system calls.
-=============================================================*/
-string get_absolute_path(string r_path)
+
+string get_absolute_path(string rel_path)
 {
     string abs_path = "";
-    if (r_path[0] == '~')
+    char first_char = rel_path[0];
+    if (first_char == '~')
     {
-        r_path = r_path.substr(1, r_path.length());
-        abs_path = string(root) + r_path;
+        rel_path = rel_path.substr(1, rel_path.length());
+        abs_path = string(root) + rel_path;
     }
-    else if (r_path[0] == '/')
+    else if (first_char == '/')
     {
-        abs_path = string(root) + r_path;
+        abs_path = string(root) + rel_path;
     }
-    else if (r_path[0] == '.' && r_path[1] == '/')
+    else if (first_char == '.' && rel_path[1] == '/')
     {
-        abs_path = string(curr_dir) + r_path.substr(1, r_path.length());
+        abs_path = string(curr_dir) + rel_path.substr(1, rel_path.length());
     }
     else
     {
-        abs_path = string(curr_dir) + "/" + r_path;
+        abs_path = string(curr_dir) + "/" + rel_path;
     }
     return abs_path;
 }
@@ -224,8 +243,9 @@ void display(const char *fileName)
 void onNCanonicalMode()
 {
     int last_row = terminal.ws_row;
-    printf("%c[%d;%dH", 27, last_row, 1);
-    printf("In Normal Mode");
+    // printf("%c[%d;%dH", 27, last_row, 1);
+    // printf("%c[2K", 27);
+    // printf("Normal Mode");
     cursor_x = cursor_y = 1;
     printCursor();
     tcgetattr(STDIN_FILENO, &orig_termios);
@@ -283,12 +303,16 @@ void onNCanonicalMode()
             moveBack();
         else if (ch == 10)
             enter();
+        else if (ch == 'k')
+            scroll_down();
+        else if (ch == 'l')
+            scroll_up();
         else if (ch == ':')
         {
-            cout << "helo  : \n";
+            // cout << "helo  : \n";
             int ret_value = enterCommandMode();
 
-            cout << "exit command mode\n";
+            // cout << "exit command mode\n";
             listDir(curr_dir);
         }
         else if (ch == 'q')
@@ -302,15 +326,10 @@ void onNCanonicalMode()
     }
 }
 
-//**********************************************************************
-// This Method Clear the stack contents
-//**********************************************************************
 void clearStack(stack<string> &s)
 {
     while (!s.empty())
-    {
         s.pop();
-    }
 }
 
 void printCursor()
@@ -320,6 +339,7 @@ void printCursor()
 
 void moveUp()
 {
+    cursor_y = 1;
     if (cursor_x > 1)
     {
         cursor_x--;
@@ -336,6 +356,7 @@ void moveUp()
 
 void moveDown()
 {
+    cursor_y = 1;
     if (cursor_x <= term_row && cursor_x < d_nameList.size())
     {
         cursor_x++;
@@ -360,13 +381,11 @@ void moveRight()
         string top = forw_path.top();
         forw_path.pop();
         strcpy(curr_dir, top.c_str());
-        //cout<<"******* RIGHT: "<<curPath;
         sflag = 0;
         listDir(curr_dir);
         cursor_x = 1, cursor_y = 1;
         printCursor();
     }
-    // cout << "inq C\n";
 }
 
 void moveLeft()
@@ -379,13 +398,11 @@ void moveLeft()
         string top = past_path.top();
         past_path.pop();
         strcpy(curr_dir, top.c_str());
-        //cout<<"******* RIGHT: "<<curPath;
         sflag = 0;
         listDir(curr_dir);
         cursor_x = 1, cursor_y = 1;
         printCursor();
     }
-    // cout << "in D\n";
 }
 
 void moveBack()
@@ -393,7 +410,6 @@ void moveBack()
     string cpath = string(curr_dir);
     if ((strcmp(curr_dir, root) != 0) && sflag != 1)
     {
-        //cout<<"**************Root : "<<root<<"***********";
         past_path.push(curr_dir);
         clearStack(forw_path);
         string parent_path = curr_dir;
@@ -412,25 +428,19 @@ void enter()
     string fileName = d_nameList[cur_window + cursor_x - 1];
     string fullPath;
     if (sflag == 1)
-    {
         fullPath = fileName;
-    }
     else
-    {
-        fullPath = string(curr_dir) + "/" + fileName;
-    }
+        fullPath = get_absolute_path(fileName);
 
     char *path = new char[fullPath.length() + 1];
     strcpy(path, fullPath.c_str());
-    //cout<<"**************"<<path<<"************";
 
-    struct stat sb;
-    stat(path, &sb);
+    // struct stat sb;
+    // stat(path, &sb);
 
-    //If file type is Directory
-    if ((sb.st_mode & S_IFMT) == S_IFDIR)
+    // if ((sb.st_mode & S_IFMT) == S_IFDIR)
+    if (isDirectory(path))
     {
-        //cout<<"DIR"<<endl;
         cursor_x = 1;
         sflag = 0;
         if (fileName == string("."))
@@ -457,10 +467,8 @@ void enter()
 
         listDir(curr_dir);
     }
-    //If file type is Regular File
-    else if ((sb.st_mode & S_IFMT) == S_IFREG)
+    else
     {
-        //cout<<"**************File Path : "<<filepath<<"***************"<<endl;
         int fileOpen = open("/dev/null", O_WRONLY);
         dup2(fileOpen, 2);
         close(fileOpen);
@@ -471,10 +479,6 @@ void enter()
             exit(0);
         }
     }
-    // else
-    // {
-    //     showError("Unknown File !!! :::::" + string(curDir));
-    // }
 }
 
 void home()
@@ -552,13 +556,19 @@ int enterCommandMode()
     string fullCommand;
     string firstWord;
     char ch;
-
+    printf("%c[%d;%dH", 27, last_row - 2, 1);
+    printf("%c[2K", 27);
+    cout << "\033[1;36mcopy\tmove\trename\tcreate_file\tcreate_dir\tdelete_dir\tdelete_file\tgoto\tsearch";
+    printf("%c[%d;%dH", 27, last_row - 1, 1);
+    printf("%c[2K", 27);
+    cout << "\033[1m\033[33mCommand Mode";
+    cout << "\033[37m";
     do
     {
         cursor_y = 2;
         printf("%c[%d;%dH", 27, last_row, 1);
         printf("%c[2K", 27);
-        cout << ": ";
+        cout << "\033[1m\033[33m: ";
         command_tokens.clear();
         fullCommand = "";
         while ((ch = getchar()) != 27 && ch != 10)
@@ -619,7 +629,11 @@ int enterCommandMode()
             else if (firstWord == "delete_dir")
                 delete_dir();
             else if (firstWord == "goto")
+            {
                 goto_path();
+                // enterCommandMode();
+                return 0;
+            }
             else if (firstWord == "search")
                 search();
             else
@@ -779,6 +793,13 @@ void goto_path()
         return;
     }
     string dest = command_tokens[1];
+    // if(dest == ".." && curr_dir == root){
+    if (strcmp(dest.c_str(), "..") == 0 && strcmp(curr_dir,root)==0)
+    {
+        listDir(curr_dir);
+        cout << "herhe in goto .." << endl;
+        return;
+    }
     dest_path = get_absolute_path(dest);
     if (!isDirectory(dest_path))
     {
@@ -911,7 +932,7 @@ void recursiveDelete(string path)
 
 void move()
 {
-    string file_to_move, source_filename,dest_path2;
+    string file_to_move, source_filename, dest_path2;
     if (command_tokens.size() < 2)
     {
         cout << "invalid command \n";
@@ -935,7 +956,8 @@ void move()
         else
         {
             copyFile(file_to_move, dest_path2);
-            if (remove(file_to_move.c_str()) != 0){
+            if (remove(file_to_move.c_str()) != 0)
+            {
                 cout << "error in moving file \n";
                 return;
             }
@@ -943,7 +965,96 @@ void move()
     }
 }
 
+void recursiveSearch(string curr_path, string fileName, bool &flag)
+{
+    DIR *d;
+    struct dirent *dir;
+    d = opendir(curr_path.c_str());
+    if (flag)
+    {
+        return;
+    }
+
+    if (d)
+    {
+        while ((dir = readdir(d)))
+        {
+            if (strcmp(dir->d_name, ".") == 0 || strcmp(dir->d_name, "..") == 0)
+                continue;
+            else
+            {
+                string curr_name = string(dir->d_name);
+                if (curr_name == fileName)
+                {
+                    flag = true;
+                    return;
+                }
+                string rel_path = curr_path + "/" + curr_name;
+                if (isDirectory(rel_path))
+                    recursiveSearch(rel_path, fileName, flag);
+            }
+        }
+    }
+}
+
 void search()
 {
-    cout << "searcgh\n";
+    if (command_tokens.size() != 2)
+    {
+        cout << "invalid command \n";
+        return;
+    }
+    // dest_path = get_absolute_path(command_tokens[command_tokens.size() - 1]);
+    string fileName = command_tokens[1];
+    bool flag = false;
+    recursiveSearch(curr_dir, fileName, flag);
+
+    int last_row = terminal.ws_row;
+    printf("%c[%d;%dH", 27, last_row, 1);
+    printf("%c[0K", 27);
+    cout << ": ";
+
+    if (flag == true)
+    {
+
+        cout << "True\n";
+    }
+    else
+    {
+        cout << "False\n";
+    }
+    return;
+    // cout << "searcgh\n";
+}
+
+void scroll_down()
+{
+    DIR *d;
+    struct dirent *dir;
+    d = opendir(curr_dir);
+    int num_files = 0;
+    if (d)
+    {
+        while ((dir = readdir(d)))
+        {
+            num_files++;
+        }
+    }
+
+    int max_rows = terminal.ws_row;
+
+    if (num_files > max_rows - 3)
+    {
+        scroll_flag = 1;
+        count_files = max_rows - 3;
+        listDir(curr_dir);
+    }
+    scroll_flag = 0;
+    count_files = 0;
+}
+
+void scroll_up()
+{
+    listDir(curr_dir);
+    return;
 }
