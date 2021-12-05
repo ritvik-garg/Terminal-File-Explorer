@@ -1,0 +1,4 @@
+- Designed Linux terminal based file explorer which operates on two mode: View mode and Command mode.
+- View mode supports viewing and traversing directories and opening files. Command mode supports various operations like create, delete, copy, move files and directories
+- Worked with system calls and data structures to handle files and its information, and also supports run time modifications of files.
+- Link : https://github.com/ritvik-garg/Terminal-File-Explorer
